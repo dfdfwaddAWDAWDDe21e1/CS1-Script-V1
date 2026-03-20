@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -69,34 +70,56 @@ def collect_measurements(
     target_name: str,
     target_ip: str,
     metrics: list[str],
+    duration: int,
+    interval: int,
 ) -> None:
     """Collect measurements and store them in the SQLite database."""
     ensure_database(db_path)
 
-    timestamp = datetime.now().isoformat(timespec="seconds")
-    rows_added = 0
+    if interval < 1:
+        raise ValueError("Interval must be at least 1 second.")
 
     connection = sqlite3.connect(db_path)
     cursor = connection.cursor()
 
-    for metric in metrics:
-        value = measure_metric(metric)
-        cursor.execute(
-            """
-            INSERT INTO measurements (timestamp, target_name, target_ip, metric, value)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (timestamp, target_name, target_ip, metric, value),
-        )
-        rows_added += 1
+    start_time = time.monotonic()
+    cycles = 0
+    rows_added = 0
 
-    connection.commit()
+    while True:
+        timestamp = datetime.now().isoformat(timespec="seconds")
+
+        for metric in metrics:
+            value = measure_metric(metric)
+            cursor.execute(
+                """
+                INSERT INTO measurements (timestamp, target_name, target_ip, metric, value)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (timestamp, target_name, target_ip, metric, value),
+            )
+            rows_added += 1
+
+        connection.commit()
+        cycles += 1
+
+        if duration <= 0:
+            break
+
+        elapsed = time.monotonic() - start_time
+        remaining = duration - elapsed
+
+        if remaining <= 0:
+            break
+
+        time.sleep(min(interval, remaining))
+
     connection.close()
 
     print("Measurements collected successfully.")
-    print(f"Timestamp   : {timestamp}")
     print(f"Target name : {target_name}")
     print(f"Target IP   : {target_ip}")
+    print(f"Cycles run  : {cycles}")
     print(f"Rows added  : {rows_added}")
     print(f"Saved to    : {db_path}")
 
@@ -209,6 +232,18 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Metrics to collect",
     )
+    collect_parser.add_argument(
+        "--duration",
+        type=int,
+        default=0,
+        help="Total collection time in seconds. Use 0 for one collection cycle.",
+    )
+    collect_parser.add_argument(
+        "--interval",
+        type=int,
+        default=5,
+        help="Seconds between collection cycles.",
+    )
 
     show_parser = subparsers.add_parser(
         "show",
@@ -260,6 +295,8 @@ def main() -> None:
             target_name=args.target_name,
             target_ip=args.target_ip,
             metrics=metrics,
+            duration=args.duration,
+            interval=args.interval,
         )
         return
 
